@@ -375,3 +375,199 @@ export async function sendGiftConfirmationOTP(
   userName?: string,
 ) {
   const mailOptions = {
+    from: `"Zendvo" <${EMAIL_CONFIG.auth.user}>`,
+    to: email,
+    subject: "Gift Confirmation OTP - Zendvo",
+    html: generateEmailTemplate(otp, userName),
+    text: `Your gift confirmation code is: ${otp}\n\nThis code will expire in 10 minutes.\n\nIf you didn't request this code, please ignore this email.`,
+  };
+
+  try {
+    if (process.env.NODE_ENV === "development") {
+      console.log("=".repeat(50));
+      console.log("📧 GIFT CONFIRMATION OTP (Development Mode)");
+      console.log("=".repeat(50));
+      console.log(`To: ${email}`);
+      console.log(`OTP Code: ${otp}`);
+      console.log(`Expires: 10 minutes`);
+      console.log("=".repeat(50));
+      return {
+        success: true,
+        messageId: "dev-mode",
+        message: "Gift confirmation OTP logged to console (development mode)",
+      };
+    }
+
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      messageId: info.messageId,
+      message: "Gift confirmation OTP email sent successfully",
+    };
+  } catch (error) {
+    console.error("Error sending gift confirmation OTP:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+      message: "Failed to send gift confirmation OTP",
+    };
+  }
+}
+
+export async function sendGiftCompletionToSender(
+  senderEmail: string,
+  senderName: string,
+  shareLink: string,
+  amount: number,
+  currency: string,
+  recipientName: string,
+) {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const fullShareLink = `${appUrl}${shareLink}`;
+  const content = `
+    <p style="margin: 0 0 20px; color: #4a5568; font-size: 16px; line-height: 1.6;">
+      Your gift of <strong>${amount} ${currency}</strong> to <strong>${recipientName}</strong> has been successfully confirmed and is ready to share!
+    </p>
+    
+    <div style="background-color: #f0f4ff; border-left: 4px solid #667eea; padding: 15px; margin: 20px 0; border-radius: 4px;">
+      <p style="margin: 0 0 10px; color: #2d3748; font-size: 14px; font-weight: 600;">
+        Your Gift Share Link:
+      </p>
+      <p style="margin: 0 0 15px; color: #4a5568; font-size: 14px; word-break: break-all;">
+        ${fullShareLink}
+      </p>
+      <p style="margin: 0; color: #718096; font-size: 12px;">
+        Share this link with friends and family. They can claim the gift when they're ready!
+      </p>
+    </div>
+    
+    <p style="margin: 20px 0 0; color: #718096; font-size: 14px; line-height: 1.6;">
+      The recipient will receive a notification that a gift is waiting for them.
+    </p>
+  `;
+
+  const mailOptions = {
+    from: `"Zendvo" <${EMAIL_CONFIG.auth.user}>`,
+    to: senderEmail,
+    subject: "Gift Confirmed - Share Your Gift Link!",
+    html: generateBaseTemplate({
+      title: "Gift Confirmed",
+      userName: senderName,
+      content,
+    }),
+    text: `Your gift of ${amount} ${currency} to ${recipientName} has been confirmed.\n\nShare link: ${fullShareLink}\n\nShare this link to let others claim your gift!`,
+  };
+
+  try {
+    if (process.env.NODE_ENV === "development") {
+      console.log("=".repeat(50));
+      console.log("📧 GIFT COMPLETION EMAIL (Development Mode)");
+      console.log("=".repeat(50));
+      console.log(`To: ${senderEmail}`);
+      console.log(`Gift: ${amount} ${currency} to ${recipientName}`);
+      console.log(`Share Link: ${fullShareLink}`);
+      console.log("=".repeat(50));
+      return {
+        success: true,
+        messageId: "dev-mode",
+        message: "Gift completion email logged to console (development mode)",
+      };
+    }
+
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      messageId: info.messageId,
+      message: "Gift confirmation email sent successfully",
+    };
+  } catch (error) {
+    console.error("Error sending gift completion email:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+      message: "Failed to send gift completion email",
+    };
+  }
+}
+
+export async function sendGiftNotificationToRecipient(
+  recipientEmail: string,
+  recipientName: string,
+  senderName: string,
+  amount: number,
+  currency: string,
+  unlockDatetime?: Date,
+) {
+  const unlockMessage = unlockDatetime
+    ? `This gift will be unlocked on ${new Date(unlockDatetime).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}.`
+    : "This gift is available for you to claim now!";
+
+  const content = `
+    <p style="margin: 0 0 20px; color: #4a5568; font-size: 16px; line-height: 1.6;">
+      Great news, <strong>${recipientName}</strong>! <strong>${senderName}</strong> has sent you a gift of <strong>${amount} ${currency}</strong>.
+    </p>
+    
+    <div style="background-color: #f0fff4; border-left: 4px solid #48bb78; padding: 15px; margin: 20px 0; border-radius: 4px;">
+      <p style="margin: 0 0 10px; color: #2d3748; font-size: 14px; font-weight: 600;">
+        🎁 Gift Status
+      </p>
+      <p style="margin: 0; color: #22543d; font-size: 14px;">
+        ${unlockMessage}
+      </p>
+    </div>
+    
+    <p style="margin: 20px 0 0; color: #718096; font-size: 14px; line-height: 1.6;">
+      Log in to your Zendvo account to view and manage your gift. Thank you for using Zendvo!
+    </p>
+  `;
+
+  const mailOptions = {
+    from: `"Zendvo" <${EMAIL_CONFIG.auth.user}>`,
+    to: recipientEmail,
+    subject: `You've Received a Gift from ${senderName}!`,
+    html: generateBaseTemplate({
+      title: "Gift Received",
+      userName: recipientName,
+      content,
+    }),
+    text: `You've received a gift of ${amount} ${currency} from ${senderName}.\n\n${unlockMessage}\n\nLog in to your Zendvo account to view your gift.`,
+  };
+
+  try {
+    if (process.env.NODE_ENV === "development") {
+      console.log("=".repeat(50));
+      console.log("📧 GIFT NOTIFICATION EMAIL (Development Mode)");
+      console.log("=".repeat(50));
+      console.log(`To: ${recipientEmail}`);
+      console.log(`From: ${senderName}`);
+      console.log(`Amount: ${amount} ${currency}`);
+      console.log(`Unlock: ${unlockDatetime?.toISOString() || "Immediate"}`);
+      console.log("=".repeat(50));
+      return {
+        success: true,
+        messageId: "dev-mode",
+        message: "Gift notification email logged to console (development mode)",
+      };
+    }
+
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      messageId: info.messageId,
+      message: "Gift notification email sent successfully",
+    };
+  } catch (error) {
+    console.error("Error sending gift notification email:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+      message: "Failed to send gift notification email",
+    };
+  }
+}

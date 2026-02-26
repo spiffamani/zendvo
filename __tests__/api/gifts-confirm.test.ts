@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { POST } from "@/app/api/gifts/[giftId]/confirm/route";
+import { POST } from "@/app/api/gifts/public/[giftId]/confirm/route";
 import { prisma } from "@/lib/prisma";
 
 // Mock prisma
@@ -7,28 +7,32 @@ jest.mock("@/lib/prisma", () => ({
     prisma: {
         gift: {
             findUnique: jest.fn(),
-            update: jest.fn(),
         },
         wallet: {
             findUnique: jest.fn(),
-            update: jest.fn(),
             upsert: jest.fn(),
-        },
-        notification: {
-            create: jest.fn(),
         },
         $transaction: jest.fn(),
     },
 }));
 
-// Mock notification service
-jest.mock("@/server/services/notificationService", () => ({
-    notifyGiftCompleted: jest.fn(() => Promise.resolve()),
+// Mock services
+jest.mock("@/server/services/transactionService", () => ({
+    processGiftTransaction: jest.fn(() => Promise.resolve("txn_mock-uuid-1234")),
 }));
 
-// Mock crypto
-jest.mock("crypto", () => ({
-    randomUUID: jest.fn(() => "mock-uuid-1234"),
+jest.mock("@/server/services/notificationService", () => ({
+    notifyGiftConfirmed: jest.fn(() => Promise.resolve()),
+}));
+
+jest.mock("@/server/services/emailService", () => ({
+    sendGiftCompletionToSender: jest.fn(() => Promise.resolve({ success: true })),
+    sendGiftNotificationToRecipient: jest.fn(() => Promise.resolve({ success: true })),
+}));
+
+// Mock tokens
+jest.mock("@/lib/tokens", () => ({
+    generateShareLinkToken: jest.fn(() => "mock-share-token-1234"),
 }));
 
 const mockGift = {
@@ -37,63 +41,55 @@ const mockGift = {
     recipientId: "recipient-456",
     amount: 100,
     currency: "USD",
-    status: "otp_verified",
+    status: "pending_review",
     transactionId: null,
     message: "Happy Birthday!",
     template: "birthday",
-    sender: { id: "sender-123", email: "sender@example.com", name: "Sender" },
+    senderName: "John Sender",
+    senderEmail: "sender@example.com",
+    shareLink: null,
+    shareLinkToken: null,
+    completedAt: null,
+    unlockDatetime: null,
+    sender: { id: "sender-123", name: "John Sender", email: "sender@example.com" },
     recipient: {
         id: "recipient-456",
+        name: "Jane Recipient",
         email: "recipient@example.com",
-        name: "Recipient",
     },
 };
 
-function makeRequest(giftId: string, userId?: string) {
-    const headers: Record<string, string> = {
-        "content-type": "application/json",
-    };
-    if (userId) {
-        headers["x-user-id"] = userId;
-    }
-
+function makeRequest(giftId: string) {
     const request = new NextRequest(
-        `http://localhost/api/gifts/${giftId}/confirm`,
+        `http://localhost/api/gifts/public/${giftId}/confirm`,
         {
             method: "POST",
-            headers,
+            headers: {
+                "content-type": "application/json",
+            },
         },
     );
 
     return request;
 }
 
-describe("POST /api/gifts/:giftId/confirm", () => {
+describe("POST /api/gifts/public/:giftId/confirm", () => {
     beforeEach(() => {
         jest.clearAllMocks();
     });
 
-    it("should return 200 with status 'completed' and transactionId on success", async () => {
+    it("should return 200 with status 'completed' and shareLink on success", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-        (prisma.wallet.findUnique as jest.Mock).mockResolvedValue({
-            id: "wallet-1",
-            userId: "sender-123",
-            currency: "USD",
-            balance: 500,
-        });
         (prisma.$transaction as jest.Mock).mockImplementation(async (fn) => {
-            await fn({
-                wallet: {
-                    update: jest.fn(),
-                    upsert: jest.fn(),
-                },
+            const result = await fn({
                 gift: {
                     update: jest.fn(),
                 },
             });
+            return result;
         });
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         const response = await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });
@@ -102,25 +98,14 @@ describe("POST /api/gifts/:giftId/confirm", () => {
         expect(response.status).toBe(200);
         expect(data.success).toBe(true);
         expect(data.status).toBe("completed");
+        expect(data.shareLink).toBe("/gift/mock-share-token-1234");
         expect(data.transactionId).toBe("txn_mock-uuid-1234");
-    });
-
-    it("should return 401 if not authenticated", async () => {
-        const request = makeRequest("gift-123");
-        const response = await POST(request, {
-            params: Promise.resolve({ giftId: "gift-123" }),
-        });
-        const data = await response.json();
-
-        expect(response.status).toBe(401);
-        expect(data.success).toBe(false);
-        expect(data.error).toBe("Unauthorized");
     });
 
     it("should return 404 if gift does not exist", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue(null);
 
-        const request = makeRequest("nonexistent-gift", "sender-123");
+        const request = makeRequest("nonexistent-gift");
         const response = await POST(request, {
             params: Promise.resolve({ giftId: "nonexistent-gift" }),
         });
@@ -131,28 +116,13 @@ describe("POST /api/gifts/:giftId/confirm", () => {
         expect(data.error).toBe("Gift not found");
     });
 
-    it("should return 403 if requester is not the sender", async () => {
-        (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-
-        const request = makeRequest("gift-123", "other-user-789");
-        const response = await POST(request, {
-            params: Promise.resolve({ giftId: "gift-123" }),
-        });
-        const data = await response.json();
-
-        expect(response.status).toBe(403);
-        expect(data.success).toBe(false);
-        expect(data.error).toBe("Forbidden");
-    });
-
     it("should return 409 if gift has already been confirmed (idempotency)", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue({
             ...mockGift,
             status: "completed",
-            transactionId: "txn_existing-123",
         });
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         const response = await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });
@@ -161,16 +131,16 @@ describe("POST /api/gifts/:giftId/confirm", () => {
         expect(response.status).toBe(409);
         expect(data.success).toBe(false);
         expect(data.error).toBe("Gift has already been confirmed");
-        expect(data.transactionId).toBe("txn_existing-123");
+        expect(data.status).toBe("completed");
     });
 
-    it("should return 400 if gift status is not otp_verified", async () => {
+    it("should return 400 if gift status is not pending_review", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue({
             ...mockGift,
             status: "pending_otp",
         });
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         const response = await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });
@@ -178,147 +148,111 @@ describe("POST /api/gifts/:giftId/confirm", () => {
 
         expect(response.status).toBe(400);
         expect(data.success).toBe(false);
-        expect(data.error).toContain("Gift must be OTP-verified");
+        expect(data.error).toContain("Expected: pending_review");
     });
 
-    it("should return 402 if sender has insufficient funds", async () => {
+    it("should perform atomic transaction with gift update and wallet changes", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-        (prisma.wallet.findUnique as jest.Mock).mockResolvedValue({
-            id: "wallet-1",
-            userId: "sender-123",
-            currency: "USD",
-            balance: 50, // less than gift amount of 100
-        });
 
-        const request = makeRequest("gift-123", "sender-123");
-        const response = await POST(request, {
-            params: Promise.resolve({ giftId: "gift-123" }),
-        });
-        const data = await response.json();
-
-        expect(response.status).toBe(402);
-        expect(data.success).toBe(false);
-        expect(data.error).toBe("Insufficient funds");
-    });
-
-    it("should return 402 if sender has no wallet", async () => {
-        (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-        (prisma.wallet.findUnique as jest.Mock).mockResolvedValue(null);
-
-        const request = makeRequest("gift-123", "sender-123");
-        const response = await POST(request, {
-            params: Promise.resolve({ giftId: "gift-123" }),
-        });
-        const data = await response.json();
-
-        expect(response.status).toBe(402);
-        expect(data.success).toBe(false);
-        expect(data.error).toBe("Insufficient funds");
-    });
-
-    it("should perform atomic wallet debit, credit, and gift update in a transaction", async () => {
-        (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-        (prisma.wallet.findUnique as jest.Mock).mockResolvedValue({
-            id: "wallet-1",
-            userId: "sender-123",
-            currency: "USD",
-            balance: 500,
-        });
-
-        const mockTxWalletUpdate = jest.fn();
-        const mockTxWalletUpsert = jest.fn();
         const mockTxGiftUpdate = jest.fn();
 
         (prisma.$transaction as jest.Mock).mockImplementation(async (fn) => {
             await fn({
-                wallet: {
-                    update: mockTxWalletUpdate,
-                    upsert: mockTxWalletUpsert,
-                },
                 gift: {
                     update: mockTxGiftUpdate,
                 },
             });
         });
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });
 
         // Verify $transaction was called
-        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.$transaction).toHaveBeenCalled();
 
-        // Verify sender wallet was debited
-        expect(mockTxWalletUpdate).toHaveBeenCalledWith({
-            where: {
-                userId_currency: {
-                    userId: "sender-123",
-                    currency: "USD",
-                },
-            },
-            data: {
-                balance: { decrement: 100 },
-            },
-        });
-
-        // Verify recipient wallet was credited via upsert
-        expect(mockTxWalletUpsert).toHaveBeenCalledWith({
-            where: {
-                userId_currency: {
-                    userId: "recipient-456",
-                    currency: "USD",
-                },
-            },
-            create: {
-                userId: "recipient-456",
-                currency: "USD",
-                balance: 100,
-            },
-            update: {
-                balance: { increment: 100 },
-            },
-        });
-
-        // Verify gift status was updated
-        expect(mockTxGiftUpdate).toHaveBeenCalledWith({
-            where: { id: "gift-123" },
-            data: {
-                status: "completed",
-                transactionId: "txn_mock-uuid-1234",
-            },
-        });
+        // Verify gift was updated with completed status
+        expect(mockTxGiftUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: "gift-123" },
+                data: expect.objectContaining({
+                    status: "completed",
+                    shareLink: "/gift/mock-share-token-1234",
+                    transactionId: "txn_mock-uuid-1234",
+                }),
+            }),
+        );
     });
 
-    it("should send notifications to both sender and recipient on success", async () => {
-        const { notifyGiftCompleted } = require("@/server/services/notificationService");
-
+    it("should send notifications and emails on success", async () => {
         (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
-        (prisma.wallet.findUnique as jest.Mock).mockResolvedValue({
-            id: "wallet-1",
-            userId: "sender-123",
-            currency: "USD",
-            balance: 500,
-        });
         (prisma.$transaction as jest.Mock).mockImplementation(async (fn) => {
-            await fn({
-                wallet: { update: jest.fn(), upsert: jest.fn() },
-                gift: { update: jest.fn() },
-            });
+            await fn({ gift: { update: jest.fn() } });
         });
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });
 
-        expect(notifyGiftCompleted).toHaveBeenCalledWith(
+        const { notifyGiftConfirmed } = jest.requireMock("@/server/services/notificationService");
+        const { sendGiftCompletionToSender, sendGiftNotificationToRecipient } = jest.requireMock("@/server/services/emailService");
+
+        // Verify notifications were created
+        expect(notifyGiftConfirmed).toHaveBeenCalledWith(
             "sender-123",
             "recipient-456",
             100,
             "USD",
-            "txn_mock-uuid-1234",
+            "/gift/mock-share-token-1234",
+            null,
         );
+
+        // Verify sender email was sent
+        expect(sendGiftCompletionToSender).toHaveBeenCalledWith(
+            "sender@example.com",
+            "John Sender",
+            "/gift/mock-share-token-1234",
+            100,
+            "USD",
+            "Jane Recipient",
+        );
+
+        // Verify recipient email was sent
+        expect(sendGiftNotificationToRecipient).toHaveBeenCalledWith(
+            "recipient@example.com",
+            "Jane Recipient",
+            "John Sender",
+            100,
+            "USD",
+            null,
+        );
+    });
+
+    it("should return 422 if insufficient balance", async () => {
+        (prisma.gift.findUnique as jest.Mock).mockResolvedValue(mockGift);
+
+        const { processGiftTransaction } = jest.requireMock("@/server/services/transactionService");
+        processGiftTransaction.mockRejectedValue(new Error("Insufficient balance"));
+
+        (prisma.$transaction as jest.Mock).mockImplementation(async (fn) => {
+            try {
+                await fn({ gift: { update: jest.fn() } });
+            } catch (err) {
+                throw err;
+            }
+        });
+
+        const request = makeRequest("gift-123");
+        const response = await POST(request, {
+            params: Promise.resolve({ giftId: "gift-123" }),
+        });
+        const data = await response.json();
+
+        expect(response.status).toBe(422);
+        expect(data.success).toBe(false);
+        expect(data.error).toContain("Insufficient balance");
     });
 
     it("should return 500 on internal server error", async () => {
@@ -326,7 +260,7 @@ describe("POST /api/gifts/:giftId/confirm", () => {
             new Error("Database connection failed"),
         );
 
-        const request = makeRequest("gift-123", "sender-123");
+        const request = makeRequest("gift-123");
         const response = await POST(request, {
             params: Promise.resolve({ giftId: "gift-123" }),
         });

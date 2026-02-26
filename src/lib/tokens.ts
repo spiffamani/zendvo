@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 
 const ACCESS_TOKEN_SECRET = process.env.JWT_SECRET || "fallback_access_secret";
 const REFRESH_TOKEN_SECRET =
@@ -55,4 +56,8 @@ export function verifyRefreshToken(token: string): TokenPayload | null {
   } catch (error) {
     return null;
   }
+}
+
+export function generateShareLinkToken(): string {
+  return crypto.randomUUID();
 }

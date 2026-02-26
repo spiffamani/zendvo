@@ -109,6 +109,9 @@ model Gift {
   senderName     String?
   senderEmail    String?
   senderAvatar   String?
+  shareLink      String?    @unique
+  shareLinkToken String?    @unique
+  completedAt    DateTime?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -116,6 +119,7 @@ model Gift {
   @@index([recipientId])
   @@index([status])
   @@index([senderEmail, recipientId])
+  @@index([shareLinkToken])
 }
 
 model Wallet {
